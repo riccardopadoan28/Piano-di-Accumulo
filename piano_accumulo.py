@@ -213,9 +213,9 @@ def simulate_monthly(params, events=None):
     cur_expenses  = params["monthlyExpenses"]
     cur_sav_r     = params["savingsReturn"]
     portfolio     = params.get("portfolio", [])
-    inflation     = params.get("inflation", 0.0)       # annua, es. 0.025
-    pal_annual    = params.get("palAnnual", True)       # PAL-skat a gennaio
-    ask_lim_grow  = params.get("askLimitGrowth", 0.0)  # crescita limite ASK
+    inflation     = params.get("inflation", 0.0)
+    pal_annual    = params.get("palAnnual", True)
+    ask_lim_grow  = params.get("askLimitGrowth", 0.0)
 
     monthly_overrides = {}
     if events:
@@ -234,17 +234,13 @@ def simulate_monthly(params, events=None):
             "deposited":     0.0,
             "balance":       0.0,
             "ask_dep":       0.0,
-            "balance_jan1":  0.0,   # saldo a inizio anno (per PAL annuale)
+            "balance_jan1":  0.0,
         })
 
     ops_balance       = 0.0
     total_deposited   = 0.0
     ask_deposited     = 0.0
     current_ask_limit = ASK_DEPOSIT_LIMIT
-
-    # FIRE target (regola 4%)
-    fire_target = cur_expenses * 12 / 0.04
-    fire_month  = None
 
     data = []
     net0 = cur_gross * (1 - cur_itax)
@@ -254,12 +250,11 @@ def simulate_monthly(params, events=None):
         "ask_balance": 0.0, "ops_balance": 0.0, "total": 0.0,
         "deposited": 0.0, "net_gain": 0.0, "net_monthly": net0,
         "sav_monthly": net0 - cur_expenses, "ask_deposited": 0.0,
-        "ask_full": False, "real_total": 0.0, "fire_reached": False,
+        "ask_full": False, "real_total": 0.0,
         "ask_limit": current_ask_limit,
     })
 
     for m in range(1, months + 1):
-        # ── Inizio anno: reset saldi per PAL-skat ────────────────────────────
         if m % 12 == 1:
             current_ask_limit *= (1 + ask_lim_grow)
             for es in etf_states:
@@ -280,7 +275,6 @@ def simulate_monthly(params, events=None):
         sav_monthly = net_monthly - cur_expenses
         ask_full    = ask_deposited >= current_ask_limit
 
-        # ── Versamento ────────────────────────────────────────────────────────
         if sav_monthly > 0:
             remaining_sav = sav_monthly
             for es in etf_states:
@@ -298,49 +292,35 @@ def simulate_monthly(params, events=None):
             ops_balance     += max(0.0, remaining_sav)
             total_deposited += sav_monthly
 
-        # ── Crescita ETF mensile (senza tassazione mensile se PAL annuale) ───
         ask_balance_total = 0.0
         etf_balances_snap = {}
         for es in etf_states:
             r_monthly = es["r_annual"] / 12
             gain      = es["balance"] * r_monthly
             if pal_annual:
-                # Nessuna tassa mensile: applica solo rendimento lordo
                 es["balance"] += gain
             else:
-                # Vecchio metodo: tassa mensile
                 es["balance"] += gain * (1 - ASK_TAX)
             etf_balances_snap[es["ticker"]] = es["balance"]
             ask_balance_total += es["balance"]
 
-        # ── PAL-skat annuale reale (a dicembre = mese % 12 == 0) ─────────────
         if pal_annual and m % 12 == 0:
             for es in etf_states:
                 annual_gain = es["balance"] - es["balance_jan1"]
                 if annual_gain > 0:
                     tax = annual_gain * ASK_TAX
                     es["balance"] -= tax
-            # Ricalcola dopo tassazione
             ask_balance_total = sum(es["balance"] for es in etf_states)
             etf_balances_snap = {es["ticker"]: es["balance"] for es in etf_states}
 
-        # ── Interessi Opspar ──────────────────────────────────────────────────
         ops_gain    = ops_balance * (cur_sav_r / 12)
         ops_balance += ops_gain * (1 - KAPITAL_TAX)
 
         total    = ask_balance_total + ops_balance
         net_gain = total - total_deposited
 
-        # ── Valore reale (corretto per inflazione) ───────────────────────────
         inflation_factor = (1 + inflation) ** (m / 12)
         real_total = total / inflation_factor
-
-        # ── FIRE ──────────────────────────────────────────────────────────────
-        # Aggiorna FIRE target con inflazione
-        fire_target_m = cur_expenses * 12 / 0.04
-        fire_reached  = total >= fire_target_m
-        if fire_reached and fire_month is None:
-            fire_month = m
 
         data.append({
             "month": m, "year_frac": m / 12,
@@ -349,7 +329,7 @@ def simulate_monthly(params, events=None):
             "total": total, "deposited": total_deposited, "net_gain": net_gain,
             "net_monthly": net_monthly, "sav_monthly": sav_monthly,
             "ask_deposited": ask_deposited, "ask_full": ask_full,
-            "real_total": real_total, "fire_reached": fire_reached,
+            "real_total": real_total,
             "ask_limit": current_ask_limit,
         })
 
@@ -366,8 +346,6 @@ def simulate_monthly(params, events=None):
         "final_deposited": data[-1]["deposited"],
         "final_net_gain":  data[-1]["net_gain"],
         "etf_states":      etf_states,
-        "fire_month":      fire_month,
-        "fire_target":     cur_expenses * 12 / 0.04,
     }
 
 
@@ -813,7 +791,7 @@ class App(tk.Tk):
         self._checkbox(opt_frame, "Aggiorna limite ASK ogni anno (+2.5%)",
                        self.ask_lim_grow, YELLOW)
 
-        # KPI grid 3×2
+        # KPI grid — rimosso FIRE
         kpi_grid = tk.Frame(parent, bg=BG())
         kpi_grid.pack(fill="x", pady=(0, 4))
         for c in range(2):
@@ -828,7 +806,6 @@ class App(tk.Tk):
             ("gain",       "Guadagno netto",    GREEN,  2, 0),
             ("ask_months", "Mesi → ASK pieno",  YELLOW, 2, 1),
             ("real_tot",   "Patrimonio reale",  CYAN,   3, 0),
-            ("fire",       "FIRE in",           PINK,   3, 1),
         ]
         for key, lbl, col, r, c in kpis:
             cell = tk.Frame(kpi_grid, bg=BG2(), padx=12, pady=10)
@@ -1224,6 +1201,7 @@ class App(tk.Tk):
         tab_bar = tk.Frame(parent, bg=BG2())
         tab_bar.pack(fill="x")
         self.tab_btns = {}
+        # Tab FIRE rimosso
         tabs = [
             ("proiezione",   "📈  PROIEZIONE"),
             ("portafoglio",  "📊  PORTAFOGLIO"),
@@ -1231,7 +1209,6 @@ class App(tk.Tk):
             ("montecarlo",   "🎲  RISCHIO MC"),
             ("composizione", "🍰  COMPOSIZIONE"),
             ("ask_fill",     "🟣  ASK FILL"),
-            ("fire",         "🔥  FIRE"),
         ]
         for t, lbl in tabs:
             b = tk.Button(tab_bar, text=lbl, bg=BG2(), fg=TEXT_DIM(),
@@ -1265,8 +1242,6 @@ class App(tk.Tk):
                                      wraplength=900, justify="left",
                                      padx=16, pady=10, anchor="w")
         self.insight_lbl.pack(fill="x")
-
-        # Inizializza tooltip (verrà aggiornato ad ogni draw)
         self._tooltip = None
 
     # ── Valuta ────────────────────────────────────────────────────────────────
@@ -1425,15 +1400,6 @@ class App(tk.Tk):
             self.kpi_labels["gain"].config(text=self._fmt(res["final_net_gain"]))
             self.kpi_labels["real_tot"].config(text=self._fmt(res["final_real"]))
 
-            # FIRE KPI
-            fm = res.get("fire_month")
-            if fm:
-                self.kpi_labels["fire"].config(
-                    text=f"mese {fm}  ({fm/12:.1f} anni)", fg=PINK)
-            else:
-                self.kpi_labels["fire"].config(
-                    text=f">{params['years']} anni", fg=TEXT_DIM())
-
             # Mesi → ASK pieno
             total_ask_pct = sum(e["pct"] for e in self.portfolio)
             if sav_m > 0 and total_ask_pct > 0:
@@ -1446,7 +1412,7 @@ class App(tk.Tk):
             else:
                 self.kpi_labels["ask_months"].config(text="—")
 
-            # Insight
+            # Insight — rimosso fire_str
             ask_fill = min(100, res["ask_deposited"] / ASK_DEPOSIT_LIMIT * 100)
             ask_fill_month = next(
                 (d["month"] for d in data if d["ask_deposited"] >= ASK_DEPOSIT_LIMIT), None)
@@ -1454,8 +1420,6 @@ class App(tk.Tk):
                                        for e in self.portfolio)
                              if self.portfolio else "nessun ETF")
             infl_str = f"  Inflazione: {params['inflation']*100:.1f}%."
-            fire_str = (f"  🔥 FIRE al mese {fm} ({fm/12:.1f} anni)."
-                        if fm else "")
             if sav_m <= 0:
                 insight = "⚡  ATTENZIONE: spese > reddito netto. Impossibile risparmiare."
             else:
@@ -1465,7 +1429,7 @@ class App(tk.Tk):
                 insight = (f"⚡  Portafoglio: {portfolio_str}.  {fill_txt}"
                            f"  Patrimonio: {self._fmt(res['final_total'])}"
                            f"  (reale: {self._fmt(res['final_real'])})"
-                           f"{infl_str}{fire_str}")
+                           f"{infl_str}")
             self.insight_lbl.config(text=insight)
 
             self._last_data   = data
@@ -1557,7 +1521,7 @@ class App(tk.Tk):
             ops_v = [d["ops_balance"]  for d in yd]
             tot_v = [d["total"]        for d in yd]
             dep_v = [d["deposited"]    for d in yd]
-            real_v  = [d.get("real_total", d["total"]) for d in yd]
+            real_v = [d.get("real_total", d["total"]) for d in yd]
             ax.fill_between(xs, ask_v, alpha=0.12, color=PURPLE)
             ax.fill_between(xs, ops_v, alpha=0.10, color=BLUE)
             ax.plot(xs, ask_v,  color=PURPLE, lw=2.5, label="ASK (ETF)",
@@ -1686,58 +1650,6 @@ class App(tk.Tk):
                     alpha=0.8, label="Limite ASK (dinamico)")
             ymax = max(max(ask_bal_v), max(ops_bal_v), ASK_DEPOSIT_LIMIT)
             self._add_event_vlines(ax, ymax, monthly=True)
-
-        elif tab == "fire":
-            ax.set_title("🔥  FIRE — Financial Independence, Retire Early",
-                         color=PINK, fontsize=10, loc="left",
-                         fontfamily=F_MONO, pad=10)
-            yd      = self._monthly_to_yearly(data)
-            xs      = [d["month"] / 12 for d in yd]
-            tot_v   = [d["total"]      for d in yd]
-            real_v  = [d.get("real_total", d["total"]) for d in yd]
-            expenses = params["monthlyExpenses"]
-            fire_target = expenses * 12 / 0.04
-            fire_target_real = fire_target  # semplificato
-
-            ax.fill_between(xs, tot_v, alpha=0.12, color=PINK)
-            ax.plot(xs, tot_v,  color=PINK,   lw=2.5, label="Patrimonio nominale",
-                    marker="o", markersize=4, markevery=max(1, len(xs)//8))
-            ax.plot(xs, real_v, color=ORANGE, lw=2,   linestyle="-.",
-                    label="Patrimonio reale (inflaz.)")
-            ax.axhline(y=fire_target, color=RED, lw=2,
-                       linestyle="--", label=f"FIRE target ({self._fmt(fire_target)})")
-
-            # Barra progresso FIRE
-            fm = self._last_res.get("fire_month") if self._last_res else None
-            if fm:
-                ax.axvline(x=fm/12, color=GREEN, lw=2, linestyle="--")
-                ax.annotate(f"🔥 FIRE!\nMese {fm}\n({fm/12:.1f} anni)",
-                            xy=(fm/12, fire_target),
-                            xytext=(fm/12 + 0.2, fire_target * 0.85),
-                            color=GREEN, fontsize=9, fontfamily=F_MONO,
-                            bbox=dict(boxstyle="round,pad=0.4",
-                                      fc=BG2(), ec=GREEN, alpha=0.9))
-            else:
-                last_total = tot_v[-1] if tot_v else 0
-                pct_to_fire = min(100, last_total / fire_target * 100) if fire_target > 0 else 0
-                ax.text(0.02, 0.06,
-                        f"Progresso FIRE: {pct_to_fire:.1f}%  "
-                        f"({self._fmt(last_total)} / {self._fmt(fire_target)})",
-                        transform=ax.transAxes,
-                        color=YELLOW, fontsize=9, fontfamily=F_MONO,
-                        bbox=dict(boxstyle="round,pad=0.4",
-                                  fc=BG2(), ec=YELLOW, alpha=0.9))
-
-            # Regola del 4%
-            ax.text(0.98, 0.02,
-                    f"Regola 4%  ·  FIRE = spese × 300\n"
-                    f"= {self._fmt(expenses)}/mese × 300 = {self._fmt(fire_target)}",
-                    transform=ax.transAxes, ha="right", va="bottom",
-                    color=TEXT_DIM(), fontsize=7, fontfamily=F_MONO,
-                    bbox=dict(boxstyle="round,pad=0.3",
-                              fc=BG2(), ec=BORDER(), alpha=0.8))
-            ymax = max(max(tot_v), fire_target) * 1.05 if tot_v else fire_target * 1.1
-            ax.set_ylim(0, ymax)
 
         self._legend(ax)
         self.canvas.draw_idle()
