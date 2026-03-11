@@ -366,7 +366,7 @@ def find_optimal_monthly(params, events=None):
     return best
 
 
-def simulate_monte_carlo_monthly(params, events=None, n_simulations=300):
+def simulate_monte_carlo_monthly(params, events=None, n_simulations=1000):
     months     = params["years"] * 12
     all_totals = np.zeros((n_simulations, months + 1))
     portfolio  = params.get("portfolio", [])
@@ -542,6 +542,10 @@ class App(tk.Tk):
         self._tooltip     = None
         self._current_ax  = None
 
+        # ── Piani di confronto ────────────────────────────────────────────────
+        self._piani = []   # lista di dict {label, params, color}
+        self._piano_widgets = []
+
         for v in (self.gross_salary, self.income_tax, self.monthly_exp,
                   self.sav_return, self.years, self.inflation):
             v.trace_add("write", lambda *_: self._schedule_refresh())
@@ -702,6 +706,7 @@ class App(tk.Tk):
         self._build_portfolio_panel(self.left_frame)
         self._build_events_panel(self.left_frame)
         self._build_strategy_panel(self.left_frame)
+        self._build_confronto_panel(self.left_frame)   # ← NUOVO
         self._build_charts(right)
 
     # ── Card / input helpers ──────────────────────────────────────────────────
@@ -1201,7 +1206,6 @@ class App(tk.Tk):
         tab_bar = tk.Frame(parent, bg=BG2())
         tab_bar.pack(fill="x")
         self.tab_btns = {}
-        # Tab FIRE rimosso
         tabs = [
             ("proiezione",   "📈  PROIEZIONE"),
             ("portafoglio",  "📊  PORTAFOGLIO"),
@@ -1209,6 +1213,7 @@ class App(tk.Tk):
             ("montecarlo",   "🎲  RISCHIO MC"),
             ("composizione", "🍰  COMPOSIZIONE"),
             ("ask_fill",     "🟣  ASK FILL"),
+            ("confronto",    "⚖️  CONFRONTO PIANI"),
         ]
         for t, lbl in tabs:
             b = tk.Button(tab_bar, text=lbl, bg=BG2(), fg=TEXT_DIM(),
@@ -1522,8 +1527,8 @@ class App(tk.Tk):
             tot_v = [d["total"]        for d in yd]
             dep_v = [d["deposited"]    for d in yd]
             real_v = [d.get("real_total", d["total"]) for d in yd]
-            ax.fill_between(xs, ask_v, alpha=0.12, color=PURPLE)
-            ax.fill_between(xs, ops_v, alpha=0.10, color=BLUE)
+            ax.fill_between(xs, ask_v,  alpha=0.12, color=PURPLE)
+            ax.fill_between(xs, ops_v,  alpha=0.10, color=BLUE)
             ax.plot(xs, ask_v,  color=PURPLE, lw=2.5, label="ASK (ETF)",
                     marker="o", markersize=4, markevery=max(1, len(xs)//8))
             ax.plot(xs, ops_v,  color=BLUE,   lw=2.5, label="Opsparingskonto",
@@ -1609,7 +1614,7 @@ class App(tk.Tk):
             ax.plot(xs_arr, mc["p95"], color=PURPLE, lw=1.2, linestyle="--", label="P95 (ottimista)")
             ax.plot(xs_m, [d["total"] for d in data], color=YELLOW,
                     lw=1.8, linestyle=":", label="Scenario base")
-            ymax = float(mc["p95"].max()) if len(mc["p95"]) > 0 else 1
+            ymax = max(max(mc["p95"]), max(mc["p50"]), max(mc["p5"]), max([d["total"] for d in data]), 1)
             self._add_event_vlines(ax, ymax, monthly=True)
 
         elif tab == "composizione":
@@ -1651,8 +1656,311 @@ class App(tk.Tk):
             ymax = max(max(ask_bal_v), max(ops_bal_v), ASK_DEPOSIT_LIMIT)
             self._add_event_vlines(ax, ymax, monthly=True)
 
+        elif tab == "confronto":
+            self._draw_confronto(ax)
+
         self._legend(ax)
         self.canvas.draw_idle()
+
+    def _draw_confronto(self, ax):
+        """Grafico di confronto tra più piani."""
+        ax.set_title("⚖️  CONFRONTO PIANI DI ACCUMULO",
+                     color=ORANGE, fontsize=10, loc="left",
+                     fontfamily=F_MONO, pad=10)
+
+        if not self._piani:
+            ax.text(0.5, 0.5,
+                    "Nessun piano aggiunto.\n\n"
+                    "Usa il pannello '⚖️ CONFRONTO PIANI' a sinistra\n"
+                    "per aggiungere scenari da confrontare.",
+                    transform=ax.transAxes, color=TEXT_DIM(),
+                    ha="center", va="center", fontsize=11, fontfamily=F_MONO,
+                    bbox=dict(boxstyle="round,pad=1", fc=BG2(), ec=BORDER(), alpha=0.8))
+            return
+
+        cur = self.currency.get()
+
+        # Normalizza tutti i piani all'orizzonte massimo
+        max_years = max(p["params"]["years"] for p in self._piani)
+
+        summary_rows = []
+
+        for piano in self._piani:
+            params = piano["params"]
+            color  = piano["color"]
+            label  = piano["label"]
+
+            res  = simulate_monthly(params, [])
+            data = res["data"]
+
+            yd   = self._monthly_to_yearly(data)
+            xs   = [d["month"] / 12 for d in yd]
+            tot  = [d["total"]      for d in yd]
+            real = [d.get("real_total", d["total"]) for d in yd]
+
+            # Curva principale
+            ax.plot(xs, tot, color=color, lw=2.5,
+                    marker="o", markersize=4,
+                    markevery=max(1, len(xs)//8),
+                    label=f"{label}  ({self._fmt(tot[-1])})")
+
+            # Curva reale tratteggiata
+            ax.plot(xs, real, color=color, lw=1.2,
+                    linestyle=":", alpha=0.6)
+
+            # Annotazione finale
+            ax.annotate(f" {label}\n {self._fmt(tot[-1])}",
+                        xy=(xs[-1], tot[-1]),
+                        color=color, fontsize=7, fontfamily=F_MONO,
+                        va="bottom")
+
+            # Fill under curve
+            ax.fill_between(xs, tot, alpha=0.05, color=color)
+
+            # Raccolta dati per tabella riepilogativa
+            dep  = data[-1]["deposited"]
+            gain = data[-1]["net_gain"]
+            net  = params["grossSalary"] * (1 - params["incomeTax"])
+            sav  = net - params["monthlyExpenses"]
+            ask_pct = sum(e["pct"] for e in params.get("portfolio", []))
+            etf_r   = (sum(e["annual_return"] * e["pct"] for e in params.get("portfolio", []))
+                       / ask_pct if ask_pct > 0 else 0)
+            summary_rows.append({
+                "label":    label,
+                "color":    color,
+                "total":    tot[-1],
+                "real":     real[-1],
+                "deposited":dep,
+                "gain":     gain,
+                "sav_m":    sav,
+                "ask_pct":  ask_pct,
+                "anni":     params["years"],
+            })
+
+        # Linea limite ASK
+        ax.axhline(y=ASK_DEPOSIT_LIMIT, color=YELLOW, lw=1,
+                   linestyle="--", alpha=0.5, label="Limite ASK")
+
+        # Tabella riepilogativa in basso nel grafico
+        if summary_rows:
+            best_total = max(r["total"] for r in summary_rows)
+            y_min      = ax.get_ylim()[0]
+            y_range    = ax.get_ylim()[1] - y_min
+
+            # Box tabella in basso a sinistra
+            table_txt = "  Piano              Patrimonio      Reale          Versato        Guadagno\n"
+            table_txt += "  " + "─" * 72 + "\n"
+            for r in summary_rows:
+                star = " ★" if r["total"] == best_total else "  "
+                table_txt += (f"  {r['label']:<18}"
+                              f"  {self._fmt(r['total']):>14}"
+                              f"  {self._fmt(r['real']):>14}"
+                              f"  {self._fmt(r['deposited']):>14}"
+                              f"  {self._fmt(r['gain']):>12}{star}\n")
+
+            ax.text(0.01, 0.02, table_txt,
+                    transform=ax.transAxes,
+                    color=TEXT_MID(), fontsize=7, fontfamily=F_MONO,
+                    va="bottom",
+                    bbox=dict(boxstyle="round,pad=0.6",
+                              fc=BG2(), ec=BORDER(), alpha=0.92))
+
+        ax.set_xlabel("Anno", color=TEXT_DIM(), fontsize=8, labelpad=6)
+        ax.set_xlim(left=0)
+
+    # ── Confronto Piani ───────────────────────────────────────────────────────
+    def _build_confronto_panel(self, parent):
+        card = self._card(parent, "⚖️  CONFRONTO PIANI", ORANGE)
+
+        tk.Label(card,
+                 text="Aggiungi fino a 6 piani con parametri diversi\n"
+                      "e confrontali nello stesso grafico.",
+                 bg=BG2(), fg=TEXT_DIM(), font=F_SMALL,
+                 wraplength=360, justify="left").pack(anchor="w", pady=(0, 10))
+
+        form = tk.Frame(card, bg=BG2())
+        form.pack(fill="x", pady=(0, 8))
+
+        r0 = tk.Frame(form, bg=BG2())
+        r0.pack(fill="x", pady=(0, 6))
+        tk.Label(r0, text="Nome piano:", bg=BG2(), fg=TEXT_MID(),
+                 font=F_SMALL).pack(side="left")
+        self._cp_name_var = tk.StringVar(value="Piano A")
+        eb = tk.Frame(r0, bg=BORDER(), padx=1, pady=1)
+        eb.pack(side="right")
+        tk.Entry(eb, textvariable=self._cp_name_var, width=14,
+                 bg=BG3(), fg=ORANGE, insertbackground=ORANGE,
+                 font=("Consolas", 10), relief="flat", bd=0).pack(ipady=5, padx=4)
+
+        self._cp_vars = {}
+        cp_fields = [
+            ("stipendio",  "Stipendio lordo (DKK)",  "36000", BLUE),
+            ("tassa",      "Aliquota (%)",            "37",    ORANGE),
+            ("spese",      "Spese mensili (DKK)",     "12550", GREEN),
+            ("rendimento", "Rendimento risp. (%)",    "3",     BLUE),
+            ("anni",       "Anni",                    "4",     ORANGE),
+            ("inflazione", "Inflazione (%)",          "2.5",   RED),
+            ("ask_pct",    "% risparmio → ASK",       "60",    PURPLE),
+            ("ask_return", "Rendimento ETF (%)",      "10",    CYAN),
+        ]
+        for key, lbl, default, col in cp_fields:
+            self._cp_vars[key] = tk.StringVar(value=default)
+            r = tk.Frame(form, bg=BG2())
+            r.pack(fill="x", pady=(0, 4))
+            tk.Label(r, text=lbl, bg=BG2(), fg=TEXT_MID(),
+                     font=F_SMALL, width=22, anchor="w").pack(side="left")
+            eb2 = tk.Frame(r, bg=BORDER(), padx=1, pady=1)
+            eb2.pack(side="right")
+            tk.Entry(eb2, textvariable=self._cp_vars[key], width=8,
+                     bg=BG3(), fg=col, insertbackground=col,
+                     font=("Consolas", 10), relief="flat", bd=0).pack(ipady=4, padx=4)
+
+        btn_row = tk.Frame(card, bg=BG2())
+        btn_row.pack(fill="x", pady=(0, 6))
+        self._btn(btn_row, "➕  Aggiungi piano",  ORANGE,
+                  self._add_piano, side="left")
+        tk.Frame(btn_row, bg=BG(), width=6).pack(side="left")
+        self._btn(btn_row, "📋  Usa corrente", BLUE,
+                  self._add_piano_corrente, side="left")
+
+        sep = tk.Frame(card, bg=BORDER(), height=1)
+        sep.pack(fill="x", pady=(6, 6))
+        tk.Label(card, text="Piani aggiunti:", bg=BG2(), fg=TEXT_DIM(),
+                 font=F_SMALL).pack(anchor="w", pady=(0, 4))
+        self._piani_list_frame = tk.Frame(card, bg=BG3())
+        self._piani_list_frame.pack(fill="x")
+
+        act_row = tk.Frame(card, bg=BG2())
+        act_row.pack(fill="x", pady=(8, 0))
+        self._btn(act_row, "🗑️  Pulisci tutti", RED,
+                  self._clear_piani, side="left")
+        tk.Frame(act_row, bg=BG(), width=6).pack(side="left")
+        self._btn(act_row, "📊  Confronta ora", GREEN,
+                  lambda: self._set_tab("confronto"), side="left")
+
+        self._refresh_piani_list()
+
+    def _parse_cp(self, key, fallback, pct=False):
+        try:
+            v = float(self._cp_vars[key].get().replace(",", "."))
+            return v / 100 if pct else v
+        except (ValueError, tk.TclError):
+            return fallback
+
+    def _add_piano(self):
+        if len(self._piani) >= 6:
+            return
+        gross    = self._parse_cp("stipendio",  36000)
+        itax     = self._parse_cp("tassa",      37,   pct=True)
+        expenses = self._parse_cp("spese",      12550)
+        sav_r    = self._parse_cp("rendimento", 3,    pct=True)
+        anni     = max(1, int(self._parse_cp("anni", 4)))
+        infl     = self._parse_cp("inflazione", 2.5,  pct=True)
+        ask_pct  = self._parse_cp("ask_pct",    60,   pct=True)
+        etf_r    = self._parse_cp("ask_return", 10,   pct=True)
+
+        portfolio = ([{
+            "ticker": "ETF", "name": "ETF generico",
+            "pct": ask_pct, "annual_return": etf_r,
+            "volatility": 0.18, "sharpe": 0.5, "status": "manual",
+        }] if ask_pct > 0 else [])
+
+        params = {
+            "grossSalary":     gross,
+            "incomeTax":       itax,
+            "monthlyExpenses": expenses,
+            "savingsReturn":   sav_r,
+            "inflation":       infl,
+            "askTax":          ASK_TAX,
+            "kapitalTax":      KAPITAL_TAX,
+            "years":           anni,
+            "portfolio":       portfolio,
+            "palAnnual":       True,
+            "askLimitGrowth":  ASK_LIMIT_GROWTH,
+        }
+        palette = [BLUE, GREEN, ORANGE, PURPLE, CYAN, PINK]
+        color   = palette[len(self._piani) % len(palette)]
+        label   = self._cp_name_var.get().strip() or f"Piano {len(self._piani)+1}"
+
+        self._piani.append({"label": label, "params": params, "color": color})
+
+        letters = "ABCDEFGHIJ"
+        idx = len(self._piani)
+        self._cp_name_var.set(f"Piano {letters[idx] if idx < len(letters) else idx+1}")
+
+        self._refresh_piani_list()
+        self._set_tab("confronto")
+
+    def _add_piano_corrente(self):
+        if len(self._piani) >= 6:
+            return
+        params  = self._params()
+        ask_pct = sum(e["pct"] for e in self.portfolio)
+        etf_r   = (sum(e["annual_return"] * e["pct"] for e in self.portfolio) / ask_pct
+                   if ask_pct > 0 else 0.10)
+        self._cp_vars["stipendio"].set(str(int(params["grossSalary"])))
+        self._cp_vars["tassa"].set(str(params["incomeTax"] * 100))
+        self._cp_vars["spese"].set(str(int(params["monthlyExpenses"])))
+        self._cp_vars["rendimento"].set(str(params["savingsReturn"] * 100))
+        self._cp_vars["anni"].set(str(params["years"]))
+        self._cp_vars["inflazione"].set(str(params["inflation"] * 100))
+        self._cp_vars["ask_pct"].set(f"{ask_pct*100:.0f}")
+        self._cp_vars["ask_return"].set(f"{etf_r*100:.1f}")
+
+        palette = [BLUE, GREEN, ORANGE, PURPLE, CYAN, PINK]
+        color   = palette[len(self._piani) % len(palette)]
+        label   = self._cp_name_var.get().strip() or f"Piano {len(self._piani)+1}"
+        self._piani.append({"label": label, "params": params, "color": color})
+
+        letters = "ABCDEFGHIJ"
+        idx = len(self._piani)
+        self._cp_name_var.set(f"Piano {letters[idx] if idx < len(letters) else idx+1}")
+
+        self._refresh_piani_list()
+        self._set_tab("confronto")
+
+    def _remove_piano(self, idx):
+        self._piani.pop(idx)
+        self._refresh_piani_list()
+        self._draw_chart()
+
+    def _clear_piani(self):
+        self._piani.clear()
+        self._refresh_piani_list()
+        self._draw_chart()
+
+    def _refresh_piani_list(self):
+        for w in self._piani_list_frame.winfo_children():
+            w.destroy()
+        if not self._piani:
+            tk.Label(self._piani_list_frame,
+                     text="  Nessun piano aggiunto.",
+                     bg=BG3(), fg=TEXT_DIM(), font=F_SMALL, pady=6).pack(anchor="w")
+            return
+        for i, piano in enumerate(self._piani):
+            row = tk.Frame(self._piani_list_frame,
+                           bg=BG2() if i % 2 == 0 else BG3())
+            row.pack(fill="x")
+            tk.Label(row, text="●", bg=row.cget("bg"), fg=piano["color"],
+                     font=("Consolas", 10)).pack(side="left", padx=(6, 2))
+            tk.Label(row, text=piano["label"], bg=row.cget("bg"),
+                     fg=TEXT(), font=F_SMALL, pady=5).pack(side="left")
+            p       = piano["params"]
+            net     = p["grossSalary"] * (1 - p["incomeTax"])
+            sav     = net - p["monthlyExpenses"]
+            ask_pct = sum(e["pct"] for e in p.get("portfolio", []))
+            etf_r   = (sum(e["annual_return"] * e["pct"] for e in p.get("portfolio", []))
+                       / ask_pct if ask_pct > 0 else 0)
+            summary = (f"  {self._fmt(sav)}/m  ·  "
+                       f"ASK {ask_pct*100:.0f}%  ·  "
+                       f"ETF {etf_r*100:.1f}%  ·  "
+                       f"{p['years']}a")
+            tk.Label(row, text=summary, bg=row.cget("bg"),
+                     fg=TEXT_DIM(), font=("Consolas", 7)).pack(side="left")
+            tk.Button(row, text="✕", bg=row.cget("bg"), fg=RED,
+                      relief="flat", font=F_SMALL, cursor="hand2",
+                      command=lambda i=i: self._remove_piano(i)).pack(side="right", padx=4)
+
 
 if __name__ == "__main__":
     app = App()
